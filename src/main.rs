@@ -94,7 +94,7 @@ fn get_cached_component_code(
     }
 }
 
-fn get_loaded_component(ds_api_server: &String, populate_cache: bool, disable_logging: bool, code_cache: &chashmap::CHashMap<String, String>, component_name: &String, component_version: &String) -> LoadedComponent {
+fn get_loaded_component(ds_api_server: &String, populate_cache: bool, disable_logging: bool, code_cache: &chashmap::CHashMap<String, String>, component_name: &String, component_version: &String) -> Option<LoadedComponent> {
     let mut component_code = String::new();
 
     match get_cached_component_code(&code_cache, &component_name, &component_version) {
@@ -102,45 +102,47 @@ fn get_loaded_component(ds_api_server: &String, populate_cache: bool, disable_lo
             component_code.push_str(&cached_component_code);
         },
         None => {
-            let js_paths =
-                load::get_component_js_paths(&ds_api_server, &component_name, &component_version);
-
-            for js_path in js_paths.into_iter() {
-                let loaded_content = load::get_component_file_contents(
-                    &ds_api_server,
-                    &component_name,
-                    &component_version,
-                    &js_path,
-                );
-                match loaded_content {
-                    Some(content) => {
-                        println!("{}/{} ({} bytes)", &component_name, &component_version, &content.len());
-                        component_code.push_str(&content);
+            match load::get_component_js_paths(&ds_api_server, &component_name, &component_version) {
+                Some(js_paths) => {
+                    for js_path in js_paths.into_iter() {
+                        let loaded_content = load::get_component_file_contents(
+                            &ds_api_server,
+                            &component_name,
+                            &component_version,
+                            &js_path,
+                        );
+                        match loaded_content {
+                            Some(content) => {
+                                println!("{}/{} ({} bytes)", &component_name, &component_version, &content.len());
+                                component_code.push_str(&content);
+                            }
+                            None => (),
+                        }
                     }
-                    None => (),
-                }
-            }
 
-            if populate_cache {
-                if disable_logging {
-                    component_code = component_code
-                    .replace("includes('stage.textalk.se')", "includes()")
-                    .replace("console.log('Putting obj into cache by path', pth);", "")
-                    .replace("console.log(\"%c TWAPI CALL \"+e,\"color: #7D4585; font-weight: bold;\",t),", "")
-                    .replace("console.log(\"%c TWAPI RESULT \"+e,\"color: green; font-weight: bold;\",r.result,t),", "")
-                    .replace("console.log('%cDEPRECATED: tws-react from1to1x %c import from tws-core instead', 'color: red', 'color: #000');", "")
-                    .replace("console.log('%cDEPRECATED: tws-react jed %c import from tws-core instead', 'color: red', 'color: #000');", "");
-                }
-                cache_loaded_component_code(&code_cache, &component_name, &component_version, &component_code);
+                    if populate_cache {
+                        if disable_logging {
+                            component_code = component_code
+                            .replace("includes('stage.textalk.se')", "includes()")
+                            .replace("console.log('Putting obj into cache by path', pth);", "")
+                            .replace("console.log(\"%c TWAPI CALL \"+e,\"color: #7D4585; font-weight: bold;\",t),", "")
+                            .replace("console.log(\"%c TWAPI RESULT \"+e,\"color: green; font-weight: bold;\",r.result,t),", "")
+                            .replace("console.log('%cDEPRECATED: tws-react from1to1x %c import from tws-core instead', 'color: red', 'color: #000');", "")
+                            .replace("console.log('%cDEPRECATED: tws-react jed %c import from tws-core instead', 'color: red', 'color: #000');", "");
+                        }
+                        cache_loaded_component_code(&code_cache, &component_name, &component_version, &component_code);
+                    }
+                },
+                None => return None
             }
         }
     }
 
-    LoadedComponent {
+    Some(LoadedComponent {
         name: component_name.clone(),
         version: component_version.clone(),
         code: component_code.clone(),
-    }
+    })
 }
 
 fn main() {
@@ -211,7 +213,7 @@ fn main() {
                         Some(component_version) => {
                             let populate_cache = !uncached_files.contains(&component_name);
                             let loaded_component = get_loaded_component(&ds_api_server, populate_cache, disable_logging, &code_cache, &component_name, &component_version);
-                            Some(loaded_component)
+                            loaded_component
                         }
                         None => None,
                     }
