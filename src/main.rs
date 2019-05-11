@@ -1,9 +1,9 @@
-extern crate clap; 
+extern crate clap;
 extern crate rayon;
 extern crate reqwest;
-use tiny_http;
+use clap::{App, Arg};
 use rayon::prelude::*;
-use clap::{Arg, App};
+use tiny_http;
 mod load;
 
 #[derive(Debug)]
@@ -15,7 +15,7 @@ struct QueryParam {
 struct LoadedComponent {
     name: String,
     version: String,
-    code: String
+    code: String,
 }
 
 fn parse_params(url: &String) -> Option<Vec<QueryParam>> {
@@ -72,18 +72,25 @@ fn build_component_cache_key(component_name: &String, component_version: &String
     cache_key
 }
 
-fn cache_loaded_component_code(code_cache: &chashmap::CHashMap<String, String>, component_name: &String, component_version: &String, component_code: &String) {
+fn cache_loaded_component_code(
+    code_cache: &chashmap::CHashMap<String, String>,
+    component_name: &String,
+    component_version: &String,
+    component_code: &String,
+) {
     let cache_key = build_component_cache_key(&component_name, &component_version);
     code_cache.insert_new(cache_key, component_code.clone());
 }
 
-fn get_cached_component_code(code_cache: &chashmap::CHashMap<String, String>, component_name: &String, component_version: &String) -> Option<String> {
+fn get_cached_component_code(
+    code_cache: &chashmap::CHashMap<String, String>,
+    component_name: &String,
+    component_version: &String,
+) -> Option<String> {
     let cache_key = build_component_cache_key(&component_name, &component_version);
     match code_cache.get(&cache_key) {
-        Some(cache_value_read_guard) => {
-            Some(String::from(cache_value_read_guard.as_str()))
-        },
-        None => None
+        Some(cache_value_read_guard) => Some(String::from(cache_value_read_guard.as_str())),
+        None => None,
     }
 }
 
@@ -114,11 +121,15 @@ fn main() {
             .help("Remove excessive logging from source code"))
         .get_matches();
 
-    let ds_api_server = String::from(matches.value_of("server").unwrap_or("antonstage.textalk.se:8383"));
+    let ds_api_server = String::from(
+        matches
+            .value_of("server")
+            .unwrap_or("antonstage.textalk.se:8383"),
+    );
     let port = String::from(matches.value_of("port").unwrap_or("8080"));
     let uncached_files: Vec<String> = match matches.values_of("files") {
         Some(files) => files.map(|value| String::from(value)).collect(),
-        None => vec![]
+        None => vec![],
     };
     let disable_logging = matches.is_present("nolog");
     let mut server_address = String::from("127.0.0.1");
@@ -191,25 +202,25 @@ fn main() {
                             }
 
                             let loaded_component =
-                            LoadedComponent {
-                                name: component_name.clone(),
-                                version: component_version.clone(),
-                                code: component_code.clone(),
-                            };
+                                LoadedComponent {
+                                    name: component_name.clone(),
+                                    version: component_version.clone(),
+                                    code: component_code.clone(),
+                                };
                             Some(loaded_component)
                         }
                         None => None,
                     }
                 }).collect();
-                
+
                 let mut js_bundle = String::new();
 
                 for maybe_component in components.into_iter() {
                     match maybe_component {
                         Some(loaded_component) => {
                             push_component_code(&mut js_bundle, &loaded_component);
-                        },
-                        None => ()
+                        }
+                        None => (),
                     }
                 }
 
@@ -220,15 +231,13 @@ fn main() {
                 );
                 match request.respond(response) {
                     Ok(_) => (),
-                    Err(_) => ()
+                    Err(_) => (),
                 }
             }
-            None => {
-                match request.respond(tiny_http::Response::from_string("No params")) {
-                    Ok(_) => (),
-                    Err(_) => ()
-                }
-            }
+            None => match request.respond(tiny_http::Response::from_string("No params")) {
+                Ok(_) => (),
+                Err(_) => (),
+            },
         };
     }
 }
