@@ -4,6 +4,8 @@ extern crate reqwest;
 use clap::{App, Arg};
 use rayon::prelude::*;
 use tiny_http;
+use std::fs;
+use std::path::Path;
 mod load;
 
 #[derive(Debug)]
@@ -94,55 +96,116 @@ fn get_cached_component_code(
     }
 }
 
-fn get_loaded_component(ds_api_server: &String, populate_cache: bool, disable_logging: bool, code_cache: &chashmap::CHashMap<String, String>, component_name: &String, component_version: &String) -> Option<LoadedComponent> {
-    let mut component_code = String::new();
-
+fn get_remote_loaded_component(ds_api_server: &String, populate_cache: bool, disable_logging: bool, code_cache: &chashmap::CHashMap<String, String>, component_name: &String, component_version: &String, verbose: bool) -> Option<LoadedComponent> {
     match get_cached_component_code(&code_cache, &component_name, &component_version) {
         Some(cached_component_code) => {
-            component_code.push_str(&cached_component_code);
+            Some(LoadedComponent {
+                name: component_name.clone(),
+                version: component_version.clone(),
+                code: cached_component_code.clone(),
+            })
         },
         None => {
-            match load::get_component_js_paths(&ds_api_server, &component_name, &component_version) {
-                Some(js_paths) => {
-                    for js_path in js_paths.into_iter() {
-                        let loaded_content = load::get_component_file_contents(
-                            &ds_api_server,
-                            &component_name,
-                            &component_version,
-                            &js_path,
-                        );
-                        match loaded_content {
-                            Some(content) => {
-                                println!("{}/{} ({} bytes)", &component_name, &component_version, &content.len());
-                                component_code.push_str(&content);
+            match load::request_component_js_paths(&ds_api_server, &component_name, &component_version) {
+                Some(js_paths_collection) => {
+                    match remote_js_paths_collection_into_loaded_component(js_paths_collection, &ds_api_server, disable_logging, verbose) {
+                        Some(loaded_component) => {
+                            if populate_cache {
+                                cache_loaded_component_code(&code_cache, &loaded_component.name, &loaded_component.version, &loaded_component.code);
                             }
-                            None => (),
-                        }
-                    }
 
-                    if populate_cache {
-                        if disable_logging {
-                            component_code = component_code
-                            .replace("includes('stage.textalk.se')", "includes()")
-                            .replace("console.log('Putting obj into cache by path', pth);", "")
-                            .replace("console.log(\"%c TWAPI CALL \"+e,\"color: #7D4585; font-weight: bold;\",t),", "")
-                            .replace("console.log(\"%c TWAPI RESULT \"+e,\"color: green; font-weight: bold;\",r.result,t),", "")
-                            .replace("console.log('%cDEPRECATED: tws-react from1to1x %c import from tws-core instead', 'color: red', 'color: #000');", "")
-                            .replace("console.log('%cDEPRECATED: tws-react jed %c import from tws-core instead', 'color: red', 'color: #000');", "");
-                        }
-                        cache_loaded_component_code(&code_cache, &component_name, &component_version, &component_code);
+                            Some(loaded_component)
+                        },
+                        None => None
                     }
                 },
-                None => return None
+                None => None
             }
         }
     }
+}
+
+fn remove_logging_code(code: &String) -> String {
+    let new_code = code
+        .replace("includes('stage.textalk.se')", "includes()")
+        .replace("console.log('Putting obj into cache by path', pth);", "")
+        .replace("console.log(\"%c TWAPI CALL \"+e,\"color: #7D4585; font-weight: bold;\",t),", "")
+        .replace("console.log(\"%c TWAPI RESULT \"+e,\"color: green; font-weight: bold;\",r.result,t),", "")
+        .replace("console.log('%cDEPRECATED: tws-react from1to1x %c import from tws-core instead', 'color: red', 'color: #000');", "")
+        .replace("console.log('%cDEPRECATED: tws-react jed %c import from tws-core instead', 'color: red', 'color: #000');", "");
+
+    new_code
+}
+
+fn remote_js_paths_collection_into_loaded_component(js_paths_collection: load::JSPathCollection, ds_api_server: &String, disable_logging: bool, verbose: bool) -> Option<LoadedComponent> {
+    let mut component_code = String::new();
+
+    for js_path in js_paths_collection.paths.into_iter() {
+        let loaded_content = load::get_remote_component_file_contents(
+            &ds_api_server,
+            &js_paths_collection.component_name,
+            &js_paths_collection.component_version,
+            &js_path,
+        );
+        match loaded_content {
+            Some(content) => {
+                if verbose {
+                    println!("{}/{} ({} bytes)", &js_paths_collection.component_name, &js_paths_collection.component_version, &content.len());
+                }
+                component_code.push_str(&content);
+            }
+            None => return None,
+        }
+    }
+    
+    if disable_logging {
+        component_code = remove_logging_code(&component_code);
+    }
 
     Some(LoadedComponent {
-        name: component_name.clone(),
-        version: component_version.clone(),
-        code: component_code.clone(),
+        name: js_paths_collection.component_name.clone(),
+        version: js_paths_collection.component_version.clone(),
+        code: component_code.clone()
     })
+}
+
+fn override_exists(override_folder: &String, component_name: &String) -> bool {
+    let component_folder = Path::new(override_folder).join(component_name);
+    component_folder.exists()
+}
+
+fn get_overidden_loaded_component(override_folder: &String, component_name: &String) -> Option<LoadedComponent> {
+    let component_path = Path::new(override_folder).join(component_name);
+    let diversity_json_path = component_path.join("diversity.json");
+    if diversity_json_path.exists() {
+        match fs::read_to_string(diversity_json_path) {
+            Ok(diversity_json_contents) => {
+                let mut component_code = String::new();
+                let maybe_component_js_paths = load::get_component_js_paths(&diversity_json_contents);
+                if let Some(component_js_paths) = maybe_component_js_paths {
+                    for js_path_str in component_js_paths.into_iter() {
+                        let js_path = component_path.join(&js_path_str);
+                        if js_path.exists() {
+                            if let Ok(js_code) = fs::read_to_string(js_path) {
+                                component_code.push_str(&js_code);
+                            }
+                        } else {
+                            println!("File specified in diversity json does not exist {}", &js_path.to_str().unwrap_or(&String::new()));
+                        }
+                    }
+                    return Some(LoadedComponent {
+                        name: component_name.clone(),
+                        version: String::new(),
+                        code: component_code.clone(),
+                    })
+                }
+            },
+            Err(_) => {
+                println!("Could not read diversity json for override {} at {}", component_name, override_folder);
+            }
+        }
+    }
+    None
 }
 
 fn main() {
@@ -160,16 +223,31 @@ fn main() {
             .long("port")
             .help("Port to run server on. Default: 8080")
             .takes_value(true))
+        .arg(Arg::with_name("cache")
+            .short("c")
+            .long("cache")
+            .help("Cache code for all loaded components for faster serving. Exclude components with --cache-exclude."))
         .arg(Arg::with_name("files")
             .short("e")
             .long("cache-exclude")
-            .help("Exclude component bundle files from being cached in memory.")
+            .help("Exclude component bundle files from cache when cache is active. Usage: --cache-exclude [component1] [component2] [...]")
+            .takes_value(true)
+            .min_values(0)
+            .requires("cache"))
+        .arg(Arg::with_name("localfolder")
+            .short("l")
+            .long("local-folder")
+            .help("Load components from a local override folder.")
             .takes_value(true)
             .min_values(0))
         .arg(Arg::with_name("nolog")
             .short("n")
             .long("no-log")
             .help("Remove excessive logging from source code"))
+        .arg(Arg::with_name("verbose")
+            .short("v")
+            .long("verbose")
+            .help("Print which components are loaded from server"))
         .get_matches();
 
     let ds_api_server = String::from(
@@ -178,11 +256,14 @@ fn main() {
             .unwrap_or("antonstage.textalk.se:8383"),
     );
     let port = String::from(matches.value_of("port").unwrap_or("8080"));
+    let use_cache = matches.is_present("cache");
     let uncached_files: Vec<String> = match matches.values_of("files") {
         Some(files) => files.map(|value| String::from(value)).collect(),
         None => vec![],
     };
+    let maybe_override_folder = matches.value_of("localfolder").and_then(|value| Some(String::from(value)));
     let disable_logging = matches.is_present("nolog");
+    let verbose = matches.is_present("verbose");
     let mut server_address = String::from("127.0.0.1");
     server_address.push_str(":");
     server_address.push_str(&port);
@@ -211,9 +292,17 @@ fn main() {
 
                     match &maybe_component_version {
                         Some(component_version) => {
-                            let populate_cache = !uncached_files.contains(&component_name);
-                            let loaded_component = get_loaded_component(&ds_api_server, populate_cache, disable_logging, &code_cache, &component_name, &component_version);
-                            loaded_component
+                            let populate_cache = !uncached_files.contains(&component_name) && use_cache;
+
+                            if let Some(override_folder) = &maybe_override_folder {
+                                if override_exists(&override_folder, &component_name) {
+                                    if verbose {
+                                        println!("Serving local override for {}", &component_name);
+                                    }
+                                    return get_overidden_loaded_component(&override_folder, &component_name)
+                                }
+                            }
+                            get_remote_loaded_component(&ds_api_server, populate_cache, disable_logging, &code_cache, &component_name, &component_version, verbose)
                         }
                         None => None,
                     }
